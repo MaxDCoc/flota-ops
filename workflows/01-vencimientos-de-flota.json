@@ -1,0 +1,273 @@
+{
+  "name": "01 - Vencimientos de flota",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## Vencimientos\nCada mañana arma un aviso por cliente con VTV, seguro y service por kilometraje.\nNo repite avisos dentro de la ventana configurada y escala a gerencia lo que ya venció.",
+        "height": 150,
+        "width": 520,
+        "color": 4
+      },
+      "id": "f4035498-f93d-523b-a6cb-9d438354bded",
+      "name": "Nota 0",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        200,
+        20
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "1b54420e-0482-58d3-959f-b184c11ef5f2",
+      "name": "Ejecutar a mano",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        260,
+        280
+      ]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 8 * * *"
+            }
+          ]
+        }
+      },
+      "id": "67bb7e2f-0201-5b56-9f1f-a50297b58093",
+      "name": "Todos los días 08:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        260,
+        440
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH ventana AS (\n  SELECT floor(extract(epoch FROM now()) / 86400 / ops.cfg_int('repetir_aviso_dias'))::int AS n\n),\npor_cliente AS (\n  SELECT a.cliente_id, a.cliente, a.email_contacto,\n         'aviso|' || a.cliente_id || '|' || (SELECT n FROM ventana) AS clave,\n         count(*) AS cantidad,\n         count(*) FILTER (WHERE a.vencido) AS vencidos,\n         json_agg(json_build_object(\n           'patente', a.patente, 'vehiculo', a.marca_modelo,\n           'detalle', a.detalle, 'vencido', a.vencido\n         ) ORDER BY a.vencido DESC, a.patente) AS items\n  FROM ops.v_avisos a\n  GROUP BY a.cliente_id, a.cliente, a.email_contacto\n)\nSELECT p.*, (SELECT valor FROM ops.config WHERE clave = 'email_gerencia') AS email_gerencia\nFROM por_cliente p\nWHERE NOT EXISTS (SELECT 1 FROM ops.notificaciones n WHERE n.clave = p.clave)\nORDER BY p.cliente_id",
+        "options": {}
+      },
+      "id": "b39e7ac7-1950-5237-bb49-94959d71b3b2",
+      "name": "Buscar avisos pendientes",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        540,
+        360
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "pgFlota0000001",
+          "name": "Postgres flota"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const pendientes = $input.all().filter(({ json }) => Array.isArray(json.items));\nreturn pendientes.map(({ json: r }, indice) => {\n  const filas = r.items\n    .map((i) => `<tr><td>${i.patente}</td><td>${i.vehiculo}</td><td>${i.detalle}${i.vencido ? ' <b style=\"color:#b00020\">(vencido)</b>' : ''}</td></tr>`)\n    .join('');\n  const html =\n    `<p>Hola, desde el taller les avisamos sobre ${r.cantidad} aviso(s) de la flota de ${r.cliente}:</p>` +\n    `<table border=\"1\" cellpadding=\"6\" cellspacing=\"0\"><tr><th>Patente</th><th>Vehículo</th><th>Detalle</th></tr>${filas}</table>` +\n    `<p>Para pedir turno respondan este correo o usen el formulario del taller.</p>`;\n  return {\n    json: {\n      clave: r.clave,\n      para: r.email_contacto,\n      cliente: r.cliente,\n      cantidad: Number(r.cantidad),\n      vencidos: Number(r.vencidos),\n      email_gerencia: r.email_gerencia,\n      asunto: `Vencimientos de su flota: ${r.cantidad} aviso(s)`,\n      html,\n    },\n    pairedItem: { item: indice },\n  };\n});"
+      },
+      "id": "c219b529-3e3b-5a04-8d6e-87564b1e0c24",
+      "name": "Armar el email",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        820,
+        360
+      ]
+    },
+    {
+      "parameters": {
+        "fromEmail": "Taller Ejemplo <turnos@taller-ejemplo.test>",
+        "toEmail": "={{ $json.para }}",
+        "subject": "={{ $json.asunto }}",
+        "emailFormat": "html",
+        "html": "={{ $json.html }}",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "id": "0be0ad9e-e1af-5540-a276-ce5f40c91b24",
+      "name": "Enviar aviso al cliente",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        1100,
+        280
+      ],
+      "credentials": {
+        "smtp": {
+          "id": "smtpMailpit0001",
+          "name": "Mailpit"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO ops.notificaciones (clave, tipo, destinatario)\nVALUES ($1, 'AVISO_FLOTA', $2)\nON CONFLICT (clave) DO NOTHING\nRETURNING clave",
+        "options": {
+          "queryReplacement": "={{ [ $('Armar el email').item.json.clave, $('Armar el email').item.json.para ] }}"
+        }
+      },
+      "id": "ff5a32f7-aa0c-51de-a184-8dd76ae666b9",
+      "name": "Registrar aviso enviado",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1380,
+        280
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "pgFlota0000001",
+          "name": "Postgres flota"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "a0b0f3ec-e19e-5a19-bbb7-edf6dc76b390",
+              "leftValue": "={{ $json.vencidos }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "912b40fe-ddae-5f0e-8942-6628376708d4",
+      "name": "¿Hay vencimientos vencidos?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1100,
+        460
+      ]
+    },
+    {
+      "parameters": {
+        "fromEmail": "Taller Ejemplo <turnos@taller-ejemplo.test>",
+        "toEmail": "={{ $json.email_gerencia }}",
+        "subject": "=Escalamiento: {{ $json.cliente }} tiene {{ $json.vencidos }} vencimiento(s) vencido(s)",
+        "emailFormat": "html",
+        "html": "=<p>{{ $json.cliente }} tiene {{ $json.vencidos }} vencimiento(s) ya vencido(s). Se le avisó al cliente; conviene llamarlo.</p>",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "id": "e1b42004-6396-573d-a1ca-ef52e8c9ed6b",
+      "name": "Escalar a gerencia",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        1380,
+        460
+      ],
+      "credentials": {
+        "smtp": {
+          "id": "smtpMailpit0001",
+          "name": "Mailpit"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Ejecutar a mano": {
+      "main": [
+        [
+          {
+            "node": "Buscar avisos pendientes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Todos los días 08:00": {
+      "main": [
+        [
+          {
+            "node": "Buscar avisos pendientes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Buscar avisos pendientes": {
+      "main": [
+        [
+          {
+            "node": "Armar el email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Armar el email": {
+      "main": [
+        [
+          {
+            "node": "Enviar aviso al cliente",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "¿Hay vencimientos vencidos?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enviar aviso al cliente": {
+      "main": [
+        [
+          {
+            "node": "Registrar aviso enviado",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Hay vencimientos vencidos?": {
+      "main": [
+        [
+          {
+            "node": "Escalar a gerencia",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "America/Argentina/Buenos_Aires",
+    "errorWorkflow": "flota-99-errores"
+  },
+  "id": "flota-01-vencimientos"
+}
