@@ -1,0 +1,303 @@
+{
+  "name": "03 - Lista de precios de repuestos",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## Lista de precios (ETL)\n1. Descarga el archivo del proveedor.\n2. La API lo limpia (codificación, coma decimal, duplicados, precios inválidos).\n3. Se guarda lo crudo en `stg.precios_raw` y los rechazos con su motivo en `stg.etl_rechazos`.\n4. SQL fusiona en `ops.precios_repuestos` y deja historial solo si el precio cambió.\n5. Avisa a compras las variaciones grandes, una vez por día.",
+        "height": 230,
+        "width": 600,
+        "color": 4
+      },
+      "id": "39e52fd1-e494-5305-a452-0e5de9a1ae77",
+      "name": "Nota 0",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        200,
+        20
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "5787fc23-a438-5108-8de3-e6b88208002b",
+      "name": "Ejecutar a mano",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        260,
+        340
+      ]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 6 * * *"
+            }
+          ]
+        }
+      },
+      "id": "6948cefe-ecb5-52ec-97e8-a55b08646b09",
+      "name": "Todos los días 06:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        260,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "http://api:8000/proveedor/lista-precios",
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "responseFormat": "file",
+              "outputPropertyName": "data"
+            }
+          }
+        }
+      },
+      "id": "9ed51a2e-0320-509e-870a-3fd2309e1319",
+      "name": "Descargar la lista del proveedor",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        540,
+        420
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://api:8000/etl/precios",
+        "options": {
+          "timeout": 30000
+        },
+        "sendBody": true,
+        "contentType": "binaryData",
+        "inputDataFieldName": "data"
+      },
+      "id": "e84a0c04-3469-54ee-9de0-1f9988850783",
+      "name": "Limpiar el archivo (API)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        800,
+        420
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH p AS (SELECT $1::jsonb AS r),\ncrudas AS (\n  INSERT INTO stg.precios_raw (lote_id, linea, contenido)\n  SELECT p.r->>'lote_id', (c->>'linea')::int, jsonb_build_object('texto', c->>'texto')\n  FROM p, jsonb_array_elements(p.r->'crudas') c\n  RETURNING 1\n),\nrechazos AS (\n  INSERT INTO stg.etl_rechazos (lote_id, linea, motivo, contenido)\n  SELECT p.r->>'lote_id', (x->>'linea')::int, x->>'motivo', x->>'contenido'\n  FROM p, jsonb_array_elements(p.r->'rechazadas') x\n  RETURNING 1\n),\nentrada AS (\n  SELECT x.sku, x.descripcion, x.proveedor, x.precio, x.moneda\n  FROM p, jsonb_to_recordset(p.r->'limpias')\n    AS x(sku text, descripcion text, proveedor text, precio numeric, moneda text)\n),\ncambios AS (\n  SELECT e.* FROM entrada e\n  LEFT JOIN ops.precios_repuestos o USING (sku)\n  WHERE o.sku IS NULL OR o.precio IS DISTINCT FROM e.precio\n),\nfusion AS (\n  INSERT INTO ops.precios_repuestos (sku, descripcion, proveedor, precio, moneda, actualizado_en)\n  SELECT sku, descripcion, proveedor, precio, moneda, now() FROM cambios\n  ON CONFLICT (sku) DO UPDATE SET\n    descripcion = EXCLUDED.descripcion, proveedor = EXCLUDED.proveedor,\n    precio = EXCLUDED.precio, moneda = EXCLUDED.moneda, actualizado_en = EXCLUDED.actualizado_en\n  RETURNING sku\n),\nhistorial AS (\n  INSERT INTO ops.precios_historial (sku, precio)\n  SELECT sku, precio FROM cambios\n  RETURNING 1\n)\nSELECT p.r->>'lote_id' AS lote_id,\n       (SELECT count(*) FROM crudas) AS lineas_crudas,\n       (SELECT count(*) FROM rechazos) AS rechazadas,\n       (SELECT count(*) FROM fusion) AS precios_actualizados\nFROM p",
+        "options": {
+          "queryReplacement": "={{ [ JSON.stringify($json) ] }}"
+        }
+      },
+      "id": "0fcd8cbf-5e69-52b1-896c-fd5e8c7210df",
+      "name": "Cargar el lote y fusionar precios",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1060,
+        420
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "pgFlota0000001",
+          "name": "Postgres flota"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT sku, descripcion, anterior, actual, variacion_pct,\n       (SELECT valor FROM ops.config WHERE clave = 'email_compras') AS email_compras,\n       'precios|' || current_date AS clave\nFROM ops.v_variacion_precios\nWHERE abs(variacion_pct) >= ops.cfg_int('variacion_precio_pct')\n  AND NOT EXISTS (SELECT 1 FROM ops.notificaciones WHERE clave = 'precios|' || current_date)\nORDER BY abs(variacion_pct) DESC",
+        "options": {}
+      },
+      "id": "a33fd9e1-1135-5a2b-8339-eff13f76fe70",
+      "name": "Buscar variaciones grandes",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1320,
+        420
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "pgFlota0000001",
+          "name": "Postgres flota"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const filas = $input.all().map((i) => i.json).filter((r) => r.sku);\nif (filas.length === 0) return [];\nconst fmt = (n) => Number(n).toLocaleString('es-AR', { minimumFractionDigits: 2 });\nconst tabla = filas\n  .map((r) => `<tr><td>${r.sku}</td><td>${r.descripcion}</td><td align=\"right\">$ ${fmt(r.anterior)}</td><td align=\"right\">$ ${fmt(r.actual)}</td><td align=\"right\"><b>${r.variacion_pct > 0 ? '+' : ''}${r.variacion_pct} %</b></td></tr>`)\n  .join('');\nconst html =\n  `<p>Variaciones de precio del proveedor desde la última carga (${filas.length}):</p>` +\n  `<table border=\"1\" cellpadding=\"6\" cellspacing=\"0\"><tr><th>SKU</th><th>Repuesto</th><th>Antes</th><th>Ahora</th><th>Variación</th></tr>${tabla}</table>`;\nreturn [{ json: { clave: filas[0].clave, para: filas[0].email_compras, asunto: `Precios de repuestos: ${filas.length} variación(es) importantes`, html }, pairedItem: { item: 0 } }];"
+      },
+      "id": "98372b3a-8222-580b-bbe3-ac7ac48a5861",
+      "name": "Armar el resumen para compras",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1580,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "fromEmail": "Taller Ejemplo <turnos@taller-ejemplo.test>",
+        "toEmail": "={{ $json.para }}",
+        "subject": "={{ $json.asunto }}",
+        "emailFormat": "html",
+        "html": "={{ $json.html }}",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "id": "c548fb11-ca05-52bf-a08e-e2602864b01b",
+      "name": "Enviar a compras",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        1840,
+        420
+      ],
+      "credentials": {
+        "smtp": {
+          "id": "smtpMailpit0001",
+          "name": "Mailpit"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO ops.notificaciones (clave, tipo, destinatario)\nVALUES ($1, 'PRECIOS', $2)\nON CONFLICT (clave) DO NOTHING\nRETURNING clave",
+        "options": {
+          "queryReplacement": "={{ [ $('Armar el resumen para compras').first().json.clave, $('Armar el resumen para compras').first().json.para ] }}"
+        }
+      },
+      "id": "4e0e7ea5-107d-52d9-8d9b-bdb4bc626bf6",
+      "name": "Registrar aviso de precios",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        2100,
+        420
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "pgFlota0000001",
+          "name": "Postgres flota"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Ejecutar a mano": {
+      "main": [
+        [
+          {
+            "node": "Descargar la lista del proveedor",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Todos los días 06:00": {
+      "main": [
+        [
+          {
+            "node": "Descargar la lista del proveedor",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Descargar la lista del proveedor": {
+      "main": [
+        [
+          {
+            "node": "Limpiar el archivo (API)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Limpiar el archivo (API)": {
+      "main": [
+        [
+          {
+            "node": "Cargar el lote y fusionar precios",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Cargar el lote y fusionar precios": {
+      "main": [
+        [
+          {
+            "node": "Buscar variaciones grandes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Buscar variaciones grandes": {
+      "main": [
+        [
+          {
+            "node": "Armar el resumen para compras",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Armar el resumen para compras": {
+      "main": [
+        [
+          {
+            "node": "Enviar a compras",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enviar a compras": {
+      "main": [
+        [
+          {
+            "node": "Registrar aviso de precios",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "America/Argentina/Buenos_Aires",
+    "errorWorkflow": "flota-99-errores"
+  },
+  "id": "flota-03-precios"
+}
