@@ -1,0 +1,110 @@
+{
+  "name": "99 - Errores",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## Errores\nTodos los flujos apuntan acá cuando fallan.\nSe guarda el error en `ops.ejecuciones_error` y se avisa a operaciones.",
+        "height": 150,
+        "width": 420,
+        "color": 3
+      },
+      "id": "e3dc2e75-73c3-568c-9acb-909fe232d470",
+      "name": "Nota 0",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        200,
+        40
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "1ca06bb2-e40a-5bec-ba60-7d52921f9297",
+      "name": "Falló un flujo",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        260,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO ops.ejecuciones_error (workflow, nodo, mensaje)\nVALUES ($1, $2, $3)\nRETURNING workflow, nodo, mensaje,\n  (SELECT valor FROM ops.config WHERE clave = 'email_operaciones') AS email_operaciones",
+        "options": {
+          "queryReplacement": "={{ [ $json.workflow?.name ?? '', $json.execution?.lastNodeExecuted ?? '', $json.execution?.error?.message ?? '' ] }}"
+        }
+      },
+      "id": "7926b8cf-74c8-5f47-a9cb-08ad87c66fc6",
+      "name": "Registrar el error",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        520,
+        300
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "pgFlota0000001",
+          "name": "Postgres flota"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "fromEmail": "Taller Ejemplo <turnos@taller-ejemplo.test>",
+        "toEmail": "={{ $json.email_operaciones }}",
+        "subject": "=Falló el flujo \"{{ $json.workflow }}\"",
+        "emailFormat": "html",
+        "html": "=<p>El flujo <b>{{ $json.workflow }}</b> falló en el nodo <b>{{ $json.nodo }}</b>.</p><p>{{ $json.mensaje }}</p>",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "id": "cb5fa036-76ac-58b5-8335-a0d312758d35",
+      "name": "Avisar a operaciones",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        780,
+        300
+      ],
+      "credentials": {
+        "smtp": {
+          "id": "smtpMailpit0001",
+          "name": "Mailpit"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Falló un flujo": {
+      "main": [
+        [
+          {
+            "node": "Registrar el error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Registrar el error": {
+      "main": [
+        [
+          {
+            "node": "Avisar a operaciones",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "America/Argentina/Buenos_Aires"
+  },
+  "id": "flota-99-errores"
+}
