@@ -1,0 +1,348 @@
+{
+  "name": "04 - Seguimiento preventivo",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## Seguimiento preventivo\nCada lunes consulta a VoltCare los indicadores de mantenimiento (MTTR) y aplica la regla de su análisis:\nun cliente con contrato activo que pasa de N días sin servicio preventivo recibe un ticket de contacto.\nGerencia recibe un resumen semanal, una sola vez por semana.",
+        "height": 190,
+        "width": 620,
+        "color": 4
+      },
+      "id": "4302c570-1941-5568-948b-b2852742978d",
+      "name": "Nota 0",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        200,
+        20
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "d15d105c-ab2c-5613-aba4-8d63d3341f6b",
+      "name": "Ejecutar a mano",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        260,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 8 * * 1"
+            }
+          ]
+        }
+      },
+      "id": "5ccd0545-85b7-5d25-bffc-279d7f550481",
+      "name": "Lunes 08:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        260,
+        460
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://voltcare:8080/analyze",
+        "options": {
+          "timeout": 120000
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "{}"
+      },
+      "id": "9fbb6d25-0bb0-5379-96b6-66af02558e48",
+      "name": "VoltCare: indicadores globales",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        540,
+        380
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://voltcare:8080/analyze",
+        "options": {
+          "timeout": 120000
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "{\"service_type\": \"Correctivo Software\", \"seniority\": \"Junior\"}"
+      },
+      "id": "37a49a29-cd15-5f99-8510-0fc322987aec",
+      "name": "VoltCare: correctivos de software (junior)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        820,
+        380
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://voltcare:8080/analyze",
+        "options": {
+          "timeout": 120000
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "{\"service_type\": \"Preventivo\"}"
+      },
+      "id": "d4749f77-a742-5f4d-9445-e303a677506e",
+      "name": "VoltCare: preventivos",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1100,
+        380
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "WITH nuevos AS (\n  INSERT INTO ops.tickets_contacto (cliente_id, motivo)\n  SELECT cliente_id, 'Sin servicio preventivo en más de ' || ops.cfg_int('preventivo_dias') || ' días'\n  FROM ops.v_clientes_sin_preventivo\n  ON CONFLICT (cliente_id, motivo) WHERE estado = 'ABIERTO' DO NOTHING\n  RETURNING cliente_id\n),\nabiertos AS (\n  SELECT c.nombre AS cliente, c.tipo_contrato, v.ultimo_preventivo, v.dias_sin_preventivo\n  FROM ops.tickets_contacto t\n  JOIN ops.clientes c ON c.id = t.cliente_id\n  LEFT JOIN ops.v_clientes_sin_preventivo v ON v.cliente_id = c.id\n  WHERE t.estado = 'ABIERTO'\n)\nSELECT (SELECT count(*) FROM nuevos) AS tickets_nuevos,\n       'semanal|' || to_char(current_date, 'IYYY-IW') AS clave,\n       (SELECT valor FROM ops.config WHERE clave = 'email_gerencia') AS email_gerencia,\n       ops.cfg_int('preventivo_dias') AS preventivo_dias,\n       coalesce((SELECT json_agg(row_to_json(a) ORDER BY a.dias_sin_preventivo DESC NULLS FIRST) FROM abiertos a), '[]'::json) AS abiertos",
+        "options": {}
+      },
+      "id": "96a8fcac-a6a3-534e-b8d2-589567342a29",
+      "name": "Abrir tickets de contacto",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1380,
+        380
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "pgFlota0000001",
+          "name": "Postgres flota"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const g = $('VoltCare: indicadores globales').first().json;\nconst sw = $('VoltCare: correctivos de software (junior)').first().json;\nconst pv = $('VoltCare: preventivos').first().json;\nconst t = $input.first().json;\nconst h = (n) => `${Number(n).toLocaleString('es-AR', { maximumFractionDigits: 1 })} h`;\nconst filas = (t.abiertos ?? [])\n  .map((c) => `<tr><td>${c.cliente}</td><td>${c.tipo_contrato}</td><td>${c.ultimo_preventivo ?? 'sin registro'}</td><td align=\"right\">${c.dias_sin_preventivo ?? '-'}</td></tr>`)\n  .join('');\nconst tiempos = g.contratos?.tiempo ?? {};\nconst html =\n  `<h3>Resumen semanal de mantenimiento</h3>` +\n  `<p>Indicadores de VoltCare sobre ${Number(g.records_analyzed).toLocaleString('es-AR')} tickets:</p>` +\n  `<ul>` +\n  `<li>MTTR global: <b>${h(g.mttr)}</b></li>` +\n  `<li>MTTR preventivos: <b>${h(pv.mttr)}</b></li>` +\n  `<li>MTTR correctivos de software con técnicos junior: <b>${h(sw.mttr)}</b></li>` +\n  `<li>MTTR por contrato: suscripción ${h(tiempos['Suscripcion'])}, pay-per-use ${h(tiempos['Pay-per-use'])}</li>` +\n  `</ul>` +\n  `<p>${(g.insights ?? []).map((i) => `<i>${i}</i>`).join('<br>')}</p>` +\n  `<h4>Clientes con más de ${t.preventivo_dias} días sin servicio preventivo</h4>` +\n  `<p>Tickets de contacto nuevos esta semana: <b>${t.tickets_nuevos}</b>.</p>` +\n  `<table border=\"1\" cellpadding=\"6\" cellspacing=\"0\"><tr><th>Cliente</th><th>Contrato</th><th>Último preventivo</th><th>Días</th></tr>${filas}</table>`;\nreturn [{ json: { clave: t.clave, para: t.email_gerencia, asunto: `Resumen semanal de mantenimiento (${t.tickets_nuevos} ticket(s) nuevo(s))`, html }, pairedItem: { item: 0 } }];"
+      },
+      "id": "12ea5aeb-4472-552c-9dfa-18ab6e9aa831",
+      "name": "Armar el resumen semanal",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1660,
+        380
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO ops.notificaciones (clave, tipo, destinatario)\nVALUES ($1, 'RESUMEN_SEMANAL', $2)\nON CONFLICT (clave) DO NOTHING\nRETURNING clave",
+        "options": {
+          "queryReplacement": "={{ [ $('Armar el resumen semanal').first().json.clave, $('Armar el resumen semanal').first().json.para ] }}"
+        }
+      },
+      "id": "8a96c2ba-425f-50b1-8112-fded49d61439",
+      "name": "Registrar el resumen de la semana",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1940,
+        380
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "pgFlota0000001",
+          "name": "Postgres flota"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "1caf4938-c085-5b53-ad90-b9dda4733235",
+              "leftValue": "={{ $json.clave }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "exists",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "efe1cbf7-49b9-5fbf-b5ba-ddd22791ed6f",
+      "name": "¿Es el primer resumen de la semana?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2220,
+        380
+      ]
+    },
+    {
+      "parameters": {
+        "fromEmail": "Taller Ejemplo <turnos@taller-ejemplo.test>",
+        "toEmail": "={{ $('Armar el resumen semanal').first().json.para }}",
+        "subject": "={{ $('Armar el resumen semanal').first().json.asunto }}",
+        "emailFormat": "html",
+        "html": "={{ $('Armar el resumen semanal').first().json.html }}",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "id": "850939d4-7116-5d64-8d11-16f13400652f",
+      "name": "Enviar resumen a gerencia",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        2500,
+        300
+      ],
+      "credentials": {
+        "smtp": {
+          "id": "smtpMailpit0001",
+          "name": "Mailpit"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Ejecutar a mano": {
+      "main": [
+        [
+          {
+            "node": "VoltCare: indicadores globales",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Lunes 08:00": {
+      "main": [
+        [
+          {
+            "node": "VoltCare: indicadores globales",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "VoltCare: indicadores globales": {
+      "main": [
+        [
+          {
+            "node": "VoltCare: correctivos de software (junior)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "VoltCare: correctivos de software (junior)": {
+      "main": [
+        [
+          {
+            "node": "VoltCare: preventivos",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "VoltCare: preventivos": {
+      "main": [
+        [
+          {
+            "node": "Abrir tickets de contacto",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Abrir tickets de contacto": {
+      "main": [
+        [
+          {
+            "node": "Armar el resumen semanal",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Armar el resumen semanal": {
+      "main": [
+        [
+          {
+            "node": "Registrar el resumen de la semana",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Registrar el resumen de la semana": {
+      "main": [
+        [
+          {
+            "node": "¿Es el primer resumen de la semana?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Es el primer resumen de la semana?": {
+      "main": [
+        [
+          {
+            "node": "Enviar resumen a gerencia",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "America/Argentina/Buenos_Aires",
+    "errorWorkflow": "flota-99-errores"
+  },
+  "id": "flota-04-preventivo"
+}
