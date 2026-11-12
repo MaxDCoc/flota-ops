@@ -1,0 +1,713 @@
+{
+  "name": "02 - Pedido de turno",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## Pedido de turno\n`POST /webhook/turno` con `patente`, `fecha`, `hora` y `motivo`.\nValida, consulta la agenda del taller por REST, reserva sin pisar horarios y manda confirmación. 24 h antes (o el tiempo de demo) envía el recordatorio si el turno sigue vigente.",
+        "height": 170,
+        "width": 620,
+        "color": 4
+      },
+      "id": "48a577ed-377f-57a7-a3b0-93384f4e627c",
+      "name": "Nota 0",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        200,
+        20
+      ]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "turno",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "1b662272-2d60-52ab-bc3e-7e29a03d38c8",
+      "name": "Pedido de turno",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        240,
+        360
+      ],
+      "webhookId": "a46eaf10-a984-5417-b915-62657e9d74e2"
+    },
+    {
+      "parameters": {
+        "jsCode": "const b = $input.first().json.body ?? {};\nconst errores = [];\nconst patente = String(b.patente ?? '').toUpperCase().replace(/[\\s-]/g, '');\nif (!/^([A-Z]{2}\\d{3}[A-Z]{2}|[A-Z]{3}\\d{3})$/.test(patente)) errores.push('patente inválida (formato AA123BB)');\nconst fecha = String(b.fecha ?? '');\nconst hora = String(b.hora ?? '');\nconst motivo = String(b.motivo ?? '').trim();\nif (!/^\\d{4}-\\d{2}-\\d{2}$/.test(fecha) || isNaN(Date.parse(fecha))) {\n  errores.push('fecha inválida (AAAA-MM-DD)');\n} else {\n  const hoy = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Argentina/Buenos_Aires' });\n  if (fecha < hoy) errores.push('la fecha ya pasó');\n}\nif (!/^\\d{2}:\\d{2}$/.test(hora)) errores.push('hora inválida (HH:MM)');\nif (motivo.length < 3) errores.push('indicá el motivo del turno');\nreturn [{ json: { ok: errores.length === 0, errores, patente, fecha, hora, motivo } }];"
+      },
+      "id": "c468ba6e-d240-542e-8ac3-5c23dc9b2f79",
+      "name": "Validar el pedido",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        500,
+        360
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "440e1fb8-1dc5-5bc9-b23a-6928be971baf",
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "60ceb463-f2d5-5708-a1d0-1e71a653b37a",
+      "name": "¿Pedido válido?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        760,
+        360
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={ \"ok\": false, \"errores\": {{ JSON.stringify($json.errores) }} }",
+        "options": {
+          "responseCode": 400
+        }
+      },
+      "id": "75c7712c-9cb6-5b63-a100-d917916125ea",
+      "name": "Responder 400",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1020,
+        560
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT v.id AS vehiculo_id, v.patente, c.nombre AS cliente, c.email_contacto,\n  (SELECT NULLIF(valor, '') FROM ops.config WHERE clave = 'demo_espera_segundos') AS demo_espera\nFROM ops.vehiculos v\nJOIN ops.clientes c ON c.id = v.cliente_id\nWHERE v.patente = $1 AND v.activo AND c.contrato_activo",
+        "options": {
+          "queryReplacement": "={{ [ $json.patente ] }}"
+        }
+      },
+      "id": "000573ee-d279-52ce-9d01-5b244ca31dbe",
+      "name": "Buscar vehículo y cliente",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        1020,
+        260
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "pgFlota0000001",
+          "name": "Postgres flota"
+        }
+      },
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "a1c8a2a6-1792-5df5-8649-ef7084e4e147",
+              "leftValue": "={{ $json.vehiculo_id }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "exists",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "de3696cc-cc4c-5f04-84e1-4779b5c1b040",
+      "name": "¿Existe el vehículo?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1280,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={ \"ok\": false, \"errores\": [\"no hay un vehículo activo con esa patente\"] }",
+        "options": {
+          "responseCode": 404
+        }
+      },
+      "id": "c160e7b7-80a7-558c-b4e6-4b0cf49286e1",
+      "name": "Responder 404",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1540,
+        440
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=http://api:8000/turnos/disponibilidad?fecha={{ $('Validar el pedido').first().json.fecha }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "999f7f85-7182-511f-8664-58d90d2b3742",
+      "name": "Consultar la agenda del taller (API)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1540,
+        160
+      ],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "658d014a-8608-5e6f-8ecb-e8dd5e619d44",
+              "leftValue": "={{ $json.horarios.includes($('Validar el pedido').first().json.hora) }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "dcbaa7bf-bb76-51b5-bc02-127988a0b896",
+      "name": "¿Horario libre?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1800,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={ \"ok\": false, \"errores\": [\"horario no disponible\"], \"horarios_libres\": {{ JSON.stringify($json.horarios) }} }",
+        "options": {
+          "responseCode": 409
+        }
+      },
+      "id": "05bb6f50-5e1f-5d37-8b88-3ca656990691",
+      "name": "Responder 409 (horario ocupado)",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        2060,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO ops.turnos (vehiculo_id, motivo, fecha_hora, estado)\nVALUES ($1, $2, ($3 || ' ' || $4)::timestamp AT TIME ZONE 'America/Argentina/Buenos_Aires', 'CONFIRMADO')\nON CONFLICT (vehiculo_id, fecha_hora) DO NOTHING\nRETURNING id,\n  to_char(fecha_hora AT TIME ZONE 'America/Argentina/Buenos_Aires', 'DD/MM/YYYY HH24:MI') AS cuando,\n  extract(epoch FROM (fecha_hora - now()))::int AS segundos_hasta_turno",
+        "options": {
+          "queryReplacement": "={{ [ $('Buscar vehículo y cliente').first().json.vehiculo_id, $('Validar el pedido').first().json.motivo, $('Validar el pedido').first().json.fecha, $('Validar el pedido').first().json.hora ] }}"
+        }
+      },
+      "id": "d4b23e43-0062-5784-990f-c7e8ff904b1a",
+      "name": "Reservar el turno",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        2060,
+        60
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "pgFlota0000001",
+          "name": "Postgres flota"
+        }
+      },
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "a38a123b-3235-5978-ae90-97f9116ae671",
+              "leftValue": "={{ $json.id }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "exists",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "3f349049-23a3-5e16-b836-49c3b5f230f4",
+      "name": "¿Se creó el turno?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2320,
+        60
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={ \"ok\": false, \"errores\": [\"ya existe un turno para ese vehículo en ese horario\"] }",
+        "options": {
+          "responseCode": 409
+        }
+      },
+      "id": "7239e2e7-3bbe-5a86-a3a6-65891af34f26",
+      "name": "Responder 409 (turno repetido)",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        2580,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={ \"ok\": true, \"turno_id\": {{ $json.id }}, \"cuando\": \"{{ $json.cuando }}\" }",
+        "options": {
+          "responseCode": 201
+        }
+      },
+      "id": "e3750ff7-f9d0-5492-b630-95e52ef046a8",
+      "name": "Responder 201",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        2580,
+        -60
+      ]
+    },
+    {
+      "parameters": {
+        "fromEmail": "Taller Ejemplo <turnos@taller-ejemplo.test>",
+        "toEmail": "={{ $('Buscar vehículo y cliente').first().json.email_contacto }}",
+        "subject": "=Turno confirmado para {{ $('Validar el pedido').first().json.patente }}: {{ $('Reservar el turno').first().json.cuando }}",
+        "emailFormat": "html",
+        "html": "=<p>Hola, confirmamos el turno de <b>{{ $('Validar el pedido').first().json.patente }}</b> para el <b>{{ $('Reservar el turno').first().json.cuando }}</b>.</p><p>Motivo: {{ $('Validar el pedido').first().json.motivo }}</p><p>Un día antes les mandamos un recordatorio.</p>",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "id": "cfe31af1-62b6-58a8-9454-3dc07ff96f22",
+      "name": "Enviar confirmación",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        2840,
+        -60
+      ],
+      "credentials": {
+        "smtp": {
+          "id": "smtpMailpit0001",
+          "name": "Mailpit"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const t = $('Reservar el turno').first().json;\nconst v = $('Buscar vehículo y cliente').first().json;\nconst demo = v.demo_espera ? Number(v.demo_espera) : null;\nconst hastaRecordatorio = Math.max(Number(t.segundos_hasta_turno) - 24 * 3600, 0);\nreturn [{ json: { turno_id: t.id, cuando: t.cuando, espera: demo ?? hastaRecordatorio } }];"
+      },
+      "id": "bd09b92b-e75b-5d2e-908d-75a1ba265335",
+      "name": "Calcular la espera",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3100,
+        -60
+      ]
+    },
+    {
+      "parameters": {
+        "resume": "timeInterval",
+        "amount": "={{ $json.espera }}",
+        "unit": "seconds"
+      },
+      "id": "76181983-5a4a-50a9-a93e-3836631b8225",
+      "name": "Esperar hasta 24 h antes",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        3360,
+        -60
+      ],
+      "webhookId": "b7491fe0-1427-5400-85bb-90d0601969ea"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT id, estado FROM ops.turnos WHERE id = $1",
+        "options": {
+          "queryReplacement": "={{ [ $('Calcular la espera').first().json.turno_id ] }}"
+        }
+      },
+      "id": "00d1bef3-69fd-537c-975d-22290fc610b5",
+      "name": "Ver estado del turno",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        3620,
+        -60
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "pgFlota0000001",
+          "name": "Postgres flota"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "939a923e-8982-5511-adf2-e9227e9e6267",
+              "leftValue": "={{ ['PENDIENTE', 'CONFIRMADO'].includes($json.estado) }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "b0384b2a-717c-5cd8-9083-85963e367c02",
+      "name": "¿Sigue vigente?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        3880,
+        -60
+      ]
+    },
+    {
+      "parameters": {
+        "fromEmail": "Taller Ejemplo <turnos@taller-ejemplo.test>",
+        "toEmail": "={{ $('Buscar vehículo y cliente').first().json.email_contacto }}",
+        "subject": "=Recordatorio de turno: {{ $('Validar el pedido').first().json.patente }} el {{ $('Calcular la espera').first().json.cuando }}",
+        "emailFormat": "html",
+        "html": "=<p>Les recordamos el turno de <b>{{ $('Validar el pedido').first().json.patente }}</b> para el <b>{{ $('Calcular la espera').first().json.cuando }}</b>.</p>",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "id": "f58c21d0-c02e-59fd-ade2-5a4d96726626",
+      "name": "Enviar recordatorio",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        4140,
+        -160
+      ],
+      "credentials": {
+        "smtp": {
+          "id": "smtpMailpit0001",
+          "name": "Mailpit"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE ops.turnos SET recordatorio_enviado_en = now() WHERE id = $1 RETURNING id",
+        "options": {
+          "queryReplacement": "={{ [ $('Calcular la espera').first().json.turno_id ] }}"
+        }
+      },
+      "id": "52326ec4-8d42-575e-a569-5772e41f4a97",
+      "name": "Marcar recordatorio enviado",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [
+        4400,
+        -160
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "pgFlota0000001",
+          "name": "Postgres flota"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Pedido de turno": {
+      "main": [
+        [
+          {
+            "node": "Validar el pedido",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validar el pedido": {
+      "main": [
+        [
+          {
+            "node": "¿Pedido válido?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Pedido válido?": {
+      "main": [
+        [
+          {
+            "node": "Buscar vehículo y cliente",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Responder 400",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Buscar vehículo y cliente": {
+      "main": [
+        [
+          {
+            "node": "¿Existe el vehículo?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Existe el vehículo?": {
+      "main": [
+        [
+          {
+            "node": "Consultar la agenda del taller (API)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Responder 404",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Consultar la agenda del taller (API)": {
+      "main": [
+        [
+          {
+            "node": "¿Horario libre?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Horario libre?": {
+      "main": [
+        [
+          {
+            "node": "Reservar el turno",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Responder 409 (horario ocupado)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reservar el turno": {
+      "main": [
+        [
+          {
+            "node": "¿Se creó el turno?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Se creó el turno?": {
+      "main": [
+        [
+          {
+            "node": "Responder 201",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Responder 409 (turno repetido)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Responder 201": {
+      "main": [
+        [
+          {
+            "node": "Enviar confirmación",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enviar confirmación": {
+      "main": [
+        [
+          {
+            "node": "Calcular la espera",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Calcular la espera": {
+      "main": [
+        [
+          {
+            "node": "Esperar hasta 24 h antes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Esperar hasta 24 h antes": {
+      "main": [
+        [
+          {
+            "node": "Ver estado del turno",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ver estado del turno": {
+      "main": [
+        [
+          {
+            "node": "¿Sigue vigente?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "¿Sigue vigente?": {
+      "main": [
+        [
+          {
+            "node": "Enviar recordatorio",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enviar recordatorio": {
+      "main": [
+        [
+          {
+            "node": "Marcar recordatorio enviado",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "America/Argentina/Buenos_Aires",
+    "errorWorkflow": "flota-99-errores"
+  },
+  "id": "flota-02-turno"
+}
