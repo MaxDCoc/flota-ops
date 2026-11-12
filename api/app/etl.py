@@ -35,6 +35,7 @@ PROVEEDOR_POR_DEFECTO = "Repuestos Muestra S.A."
 @dataclass
 class EtlResult:
     lote_id: str
+    crudas: list[dict] = field(default_factory=list)
     limpias: list[dict] = field(default_factory=list)
     rechazadas: list[dict] = field(default_factory=list)
     resumen: dict = field(default_factory=dict)
@@ -98,6 +99,7 @@ def parse_precios(raw: bytes, lote_id: str | None = None) -> EtlResult:
     for linea, celdas in filas[1:]:
         leidas += 1
         contenido = delimitador.join(celdas)
+        result.crudas.append({"linea": linea, "texto": contenido})
         if len(celdas) <= max(columnas.values()):
             _rechazar(result, linea, "columnas incompletas", contenido)
             continue

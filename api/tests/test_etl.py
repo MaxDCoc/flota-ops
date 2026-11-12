@@ -105,6 +105,14 @@ def test_cada_linea_se_contabiliza():
     assert r.resumen["limpias"] + r.resumen["rechazadas"] == r.resumen["leidas"]
 
 
+def test_se_conservan_las_lineas_crudas():
+    r = parse_precios(
+        csv_bytes("FIL-ACE-001;Filtro de aceite;9500,00;ARS", "REP-XX;Repuesto;1500,00;ARS")
+    )
+    assert [c["linea"] for c in r.crudas] == [2, 3]
+    assert r.crudas[1]["texto"] == "REP-XX;Repuesto;1500,00;ARS"
+
+
 def test_delimitador_coma():
     r = parse_precios(b"sku,descripcion,precio\r\nFIL-ACE-001,Filtro de aceite,9500.00")
     assert r.limpias[0]["precio"] == 9500.0
